@@ -656,3 +656,15 @@ msgstr "取消固件升级并清理"
 
 msgid "Reboot to new firmware"
 msgstr "重启至新固件"
+
+msgid "Remote Syslog Server"
+msgstr "远程日志服务器"
+
+msgid "Send the system log to this syslog server over UDP, as host or host:port (port 514 by default)."
+msgstr "通过 UDP 把系统日志发送到该服务器，格式为“主机”或“主机:端口”（默认端口 514）。"
+
+msgid "Reboot on omcid Crash"
+msgstr "omcid 崩溃后自动重启"
+
+msgid "Reboot when omcid crashes more than 10 minutes after boot. A crashed omcid cannot be restarted in place, so without this the stick stays offline until it is power cycled."
+msgstr "开机 10 分钟后如果 omcid 崩溃，就自动重启。omcid 崩溃后无法原地恢复，不开启的话棒子会一直掉线，只能断电恢复。"

@@ -1,6 +1,6 @@
 #!/bin/bash
 BANNER="$ROOT_DIR/etc/banner"
-sed -E "s#(^\s+OpenWrt\s+.+$)#\1\n\n 8311 Community Firmware MOD [$FW_VARIANT] - $FW_VERSION ($FW_REVISION)\n https://github.com/xiao-k233/8311-was-110-firmware-builder#g" -i "$BANNER"
+sed -E "s#(^\s+OpenWrt\s+.+$)#\1\n\n 8311 Community Firmware MOD [$FW_VARIANT] - $FW_VERSION ($FW_REVISION)\n https://github.com/HikaruChang/8311-was-110-firmware-builder#g" -i "$BANNER"
 
 UBIMGVARS="$ROOT_DIR/sbin/uboot_img_vars.sh"
 echo "Patching '$UBIMGVARS'..."
@@ -66,6 +66,9 @@ DEFAULT_DELAY=15
 echo "$RC_LOCAL_HEAD" > "$RC_LOCAL"
 cat >> "$RC_LOCAL" <<FAILSAFE
 
+# 8311 MOD: revert a one-time trial boot (img_activate) that never becomes reachable
+/usr/sbin/8311-trial-guard.sh </dev/null >/dev/null 2>&1 &
+
 # 8311 MOD: Failsafe, delay omcid start
 DELAY=\$(fw_printenv -n 8311_failsafe_delay 2>/dev/null || echo "$DEFAULT_DELAY")
 [ "\$DELAY" -ge $MIN_DELAY ] 2>/dev/null || DELAY=$MIN_DELAY
@@ -105,6 +108,13 @@ mkdir -p "$ROOT_DIR/etc/crontabs"
 touch "$ROOT_DIR/etc/crontabs/root"
 
 sed -r 's#^(\s+)(start.+)$#\1\# 8311 MOD: Do not auto start omcid\n\1\# \2#g' -i "$ROOT_DIR/etc/init.d/omcid.sh"
+
+# 8311 MOD: run omcid through 8311-omcid-supervise.sh, which reboots after a crash.
+# It gives omcid 5 s to stop, so procd must wait longer than that before SIGKILL.
+sed -r 's#^(\s+)procd_set_param command \$\{OMCID_BIN\}( .*)?$#\1procd_set_param command /usr/sbin/8311-omcid-supervise.sh ${OMCID_BIN}\2\n\1procd_set_param term_timeout 10#' -i "$ROOT_DIR/etc/init.d/omcid.sh"
+grep -q 'procd_set_param command /usr/sbin/8311-omcid-supervise.sh ${OMCID_BIN} ' "$ROOT_DIR/etc/init.d/omcid.sh" &&
+	grep -q 'procd_set_param term_timeout 10$' "$ROOT_DIR/etc/init.d/omcid.sh" ||
+	_err "Failed to hook 8311-omcid-supervise.sh into omcid.sh"
 
 CONFIG_OPTIC="$ROOT_DIR/etc/config/optic"
 sed -r "s#(option 'tx_en_mode' ').*(')#\10\2#" -i "$CONFIG_OPTIC"

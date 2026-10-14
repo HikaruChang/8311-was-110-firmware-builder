@@ -514,6 +514,10 @@ get_8311_ntp_servers() {
 	fwenv_get_8311 "ntp_servers"
 }
 
+get_8311_syslog_server() {
+	fwenv_get_8311 "syslog_server"
+}
+
 active_fwbank() {
 	grep -E -o '\brootfsname=rootfs[AB]\b' /proc/cmdline | grep -E -o '[AB]$'
 }

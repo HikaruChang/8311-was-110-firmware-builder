@@ -1,274 +1,144 @@
-# 8311 WAS-110 固件构建器 - 国内优化版
+# 8311 WAS-110 固件构建器（CN 维护版）
 
-这是一个用于构建和自定义华为8311 WAS-110 XGS-PON光猫棒固件的工具。该固件基于Azores固件，进行了多项优化和改进，特别针对国内网络环境进行了适配。
+为 MaxLinear PRX126 方案的 XGS-PON / XG-PON SFP 光猫棒（WAS-110 及同方案的棒子）构建 8311 社区固件。
 
-## 项目介绍
+维护者：Hikaru (i@rua.moe)
 
-本项目提供了构建8311 WAS-110固件的完整工具链，允许用户自定义固件特性，包括网络配置、VLAN设置、管理接口等。该固件支持XGS-PON/XG-PON网络，并提供了WebUI界面用于配置。
+这个仓库来自 [djGrrr/8311-was-110-firmware-builder](https://github.com/djGrrr/8311-was-110-firmware-builder)（原版），以及在它基础上做国内适配的 [xiao-k233/8311-was-110-firmware-builder](https://github.com/xiao-k233/8311-was-110-firmware-builder)（KillerZ）。xiao-k233 的仓库已于 2026 年归档，现在由 Hikaru 接着维护。
 
-## 主要特性
+"8311" 是 BELL 的 leet 写法，跟华为没有关系。社区资料见 [pon.wiki](https://pon.wiki/) 和 [8311 Discord](https://pon.wiki/discord/)。
 
-- 支持XGS-PON和XG-PON模式
-- 提供中文WebUI界面
-- 支持VLAN修复功能（特别是对Bell/山东联通等ISP的支持）
-- 可自定义PON参数（SN、Vendor ID、Equipment ID等）
-- 可配置管理网络参数（IP、网关、DNS等）
-- 支持SSH访问和持久化认证
-- 支持多种固件环境变量配置
-- 内置故障诊断工具
+## 版本
 
-更多详细信息请参考恩山论坛帖子：<https://www.right.com.cn/forum/forum.php?mod=viewthread&tid=8423574&page=1&extra=#pid21495681>
+版本号沿用 xiao-k233 的 `<上游版本>-CN<n>` 格式，tag 不带 `v`。上游 djGrrr 目前最新是 2.8.3，有新版本时这里跟进，并从 CN1 重新编号。
 
-## 固件环境变量配置
+### 2.8.3-CN5
 
-### ISP修复相关配置
-```
-8311_fix_vlans=1
-8311_internet_vlan=0
-8311_services_vlan=36
-```
+基于 2.8.3-CN4。
 
-- `8311_fix_vlans` - **VLAN修复**  
-  设置为`0`禁用自动VLAN修复功能。
+- **omcid 崩溃后自动重启**：omcid 崩溃后不能原地恢复。procd 重新拉起的 omcid 建不好 LCT 的流量捕获，管理口看着是 up 的，实际不通；处于 O5 的棒子会一直掉线，只能断电恢复。现在 procd 通过 `8311-omcid-supervise.sh` 运行 omcid。omcid 被信号杀死时（崩溃，或被 OOM 杀掉），在 `/ptconf/8311/omcid-crash.log` 记一行，然后重启：
+  - 试启动期间立即重启，下一次启动的是已提交的分区；
+  - 其他情况下，开机不满 10 分钟就等到满 10 分钟再重启，所以即使一开机就崩溃，也至少 10 分钟才重启一次；
+  - 连续 3 次因此重启，且两次重启之间 omcid 都没能运行满 30 分钟，就不再重启，交给 procd 处理。
 
-- `8311_internet_vlan` - **上网VLAN**  
-  设置本地使用的上网VLAN ID，设置为`0`表示无标签（同时移除VLAN 0）（范围0-4095）。默认为`0`（无标签）。
+  以下情况交给 procd 重新拉起，不重启：
+  - 正常停止（SIGTERM）：转发给 omcid，omcid 5 秒内不退出就 SIGKILL，和以前 procd 的行为一样；
+  - 普通退出码；
+  - 存在 failsafe 标记；
+  - 设置了 `8311_omcid_crash_reboot=0`。
 
-- `8311_services_vlan` - **业务VLAN**  
-  设置本地使用的业务（如IPTV/电话）VLAN ID（范围1-4095）。修复Bell等运营商的多业务支持。
+  另外，procd 按启动命令给输出打日志标签，所以 omcid 的日志在 syslog 里的标签从 `omcid[pid]` 变成了 `8311-omcid-supervise.sh[pid]`，按标签筛日志时要用新名字。
+- **试启动自动回退**：用 `img_activate` 试启动另一个分区时，同一个 omcid 要连续 2 分钟可达才算成功，否则在时限内（默认 10 分钟，至少是 failsafe 延迟再加 3 分钟）自动重启回 `commit_bank`。
+  - 可达的判断是 omcid 在运行，并且 ping 主机（`8311_ping_ip`，默认是管理网关）回应 ping 或 ARP。
+  - 提交了该分区，或者出现 failsafe 标记，守卫就结束。
+  - `8311_trial_timeout` 可以调整时限，设为 `0` 关闭守卫。
+  - 只能处理系统已经启动到 rc.local 之后的故障，比如 omcid、LCT、管理不通；内核本身起不来的情况管不到。
+- **远程 syslog**：新增 `8311_syslog_server`，填写 `主机` 或 `主机:端口`，走 UDP，默认端口 514，端口非法时按 514 处理。开机生成配置时就会生效，不需要等外部去补配置。LCT 建立之前产生的日志（开机后大约 1 分钟内）发不出去，只保留在本机的 `logread` 里。
+- **修复 pingd 刷屏**：CN 版的 pingd 每 7 秒往 syslog 和串口各写一条 `Starting ping to`，能占到日志总量的四成多。现在只在目标地址变化时写。
+- **降低常驻脚本的 CPU 占用**：
+  - `8311-vlansd.sh` 原来每 5 秒运行一次 VLAN 解析（要通过 OMCI 管道查询 omcid），还要调用 10 次 `fw_printenv`，稳定状态下占单核 CPU 约 5%，比 omcid 自己还多。现在每轮只读一次环境变量；VLAN 信息每分钟刷新一次，fix-vlans 运行后也会立即刷新；omcid 不在运行时不刷新，免得卡在 OMCI 管道上。
+  - `8311-rx_los.sh` 原来每秒 fork 一次 `cat` 读 GPIO，现在改用 shell 内建的 `read`。
+- **修复状态页**：
+  - `/tmp/8311-vlans` 不存在时（开机早期，或者 `8311_fix_vlans=0` 时一直如此），PON 状态接口返回 500。
+  - VLAN 信息里同一张表的 VLAN 号之间没有分隔符，例如 `4143454640`，现在显示为 `41 43 45 46 40`。
+- **修复网页设置**：
+  - "Fix VLANs" 的默认值显示为 OMCI MIB 模式，但脚本把未设置当作关闭，所以在新棒子上选择默认项保存后其实没有生效。现在默认值改为关闭，与实际行为一致。
+  - syslog 地址和 SFP 日期两个输入框的格式校验正则，在浏览器里是非法的，会被直接忽略，现已修正。
+- 登录提示和网页页脚里的仓库地址改为本仓库。
 
-### 管理网络配置
-```
-8311_ipaddr=192.168.11.1
-8311_netmask=255.255.255.0
-8311_gateway=192.168.11.254
-8311_ping_ip=192.168.11.2
-```
+### 2.8.3-CN4
 
-- `8311_ipaddr` - **IP地址**  
-  设置管理IP地址。默认为`192.168.11.1`
+基于 2.8.3-CN3（e01d1f0），只修了一个问题。
 
-- `8311_netmask` - **子网掩码**  
-  设置管理子网掩码。默认为`255.255.255.0`
+- **omcid 开机约 24.86 天后崩溃**：`omci_timeout.c` 把定时器到期时间存成 32 位开机毫秒数，并用有符号比较。开机接近 2^31 ms 时，超时跨过这个点的定时器会被立即触发并空转。带 IPTV 组播的线路会因此在 `omcitm` 线程段错误。之后每过 2^32 ms（约 49.7 天）会再遇到一次。补丁改的是 `mods/binary-mods.sh` 里 omcid 的 4 条指令。
 
-- `8311_gateway` - **网关**  
-  设置管理网关。默认与IP地址相同（即无默认网关）
+  验证方法：用 `LD_PRELOAD` 把 omcid 看到的时钟拨到边界前 5 分钟，原版会空转，补丁版正常；2^32 回绕处也测过。
 
-- `8311_ping_ip` - **Ping测试IP**  
-  设置每5秒ping一次的IP地址，这有助于保持设备连接。默认为配置的管理网络中的第二个IP地址（如192.168.11.2）。
+### 2.8.3-CN3 及更早
 
-### 设备相关配置
-```
-8311_console_en=1
-8311_ethtool_speed=speed 2500 autoneg off duplex full
-8311_failsafe_delay=30
-8311_persist_root=0
-8311_root_pwhash=$1$BghTQV7M$ZhWWiCgQptC1hpUdIfa0e.
-8311_rx_los=0
-```
+见 [xiao-k233 的 Release](https://github.com/xiao-k233/8311-was-110-firmware-builder/releases)。注意：那边 2.8.3-CN3 的安装包在 2025-12-31 被替换成了一个未发布的构建（`2.8.3-CN3-regidfix_basic_4324d7e`），它和最初的 2.8.3-CN3（`e01d1f0`）不同。本仓库以最初的 e01d1f0 为准。
 
-- `8311_console_en` - **串口控制台**  
-  设置为`1`启用串口控制台，这将导致TX_FAULT被置于高电平，因为它们共用同一个SFP引脚。
+## 本仓库新增的 fwenv
 
-- `8311_ethtool_speed` - **Ethtool速度设置**  
-  在eth0_0接口上设置ethtool速度参数（ethtool -s）。
+前两项可以在网页 "8311 配置" 里修改，`8311_trial_timeout` 只能用 `fw_setenv` 设置。用 `fw_setenv` 时建议执行两次，两份环境都写到。完整的 fwenv 列表见网页配置页和 [djGrrr 的 README](https://github.com/djGrrr/8311-was-110-firmware-builder)。
 
-- `8311_factory_mode` - **工厂模式**  
-  设置为1启用工厂模式，否则工厂模式将在启动时自动禁用。
+| fwenv | 默认 | 作用 |
+| --- | --- | --- |
+| `8311_syslog_server` | 空 | 远程 syslog，`主机` 或 `主机:端口`（UDP，默认 514） |
+| `8311_omcid_crash_reboot` | `1` | omcid 崩溃后重启，设为 `0` 关闭 |
+| `8311_trial_timeout` | `600` | 试启动时多少秒内必须连续 2 分钟可达，否则回退；最多 3600，至少 failsafe 延迟加 180；`0` 关闭 |
 
-- `8311_failsafe_delay` - **故障保护延迟**  
-  设置启动时omcid延迟启动的秒数（30到300）。默认为30秒。
+`8311_ntp_servers` 是原来就有的。`/etc` 每次开机都会重新生成，所以 NTP、syslog 这类设置只有写在 fwenv 里才能保留。
 
-- `8311_lct_mac` - **LCT MAC地址**  
-  设置LCT管理接口的MAC地址。
+## 刷机
 
-- `8311_persist_root` - **持久化根文件系统**  
-  设置为`1`允许根文件系统保持持久化（同时需要修改bootcmd固件环境变量）。不推荐使用，仅用于调试/测试目的。
+PRX126 棒子有 A、B 两组 kernel / bootcore / rootfs，升级只写当前不在用的那一组。坏了能否救回来，全靠另一组还完好，所以**不要直接把新固件设为 commit**。先试启动，确认没问题再提交：
 
-- `8311_root_pwhash` - **Root密码哈希**  
-  允许通过设置哈希值来自定义root密码。
+```sh
+# 1. 上传后校验，再写入非活动分区。会问两次：安装选 y，"Update commit_bank" 选 n
+8311-firmware-upgrade.sh --validate /tmp/local-upgrade.tar
+8311-firmware-upgrade.sh --install /tmp/local-upgrade.tar
 
-- `8311_rx_los` - **RX_LOS解决方案**  
-  设置为`0`以监控RX_LOS引脚状态并在其被启用时禁用它。这将允许设备在那些会因RX_LOS信号而禁用端口访问的设备中保持可访问状态。
+# 2. 只从新分区启动一次（假设新分区是 B）
+fw_setenv img_activate B; fw_setenv img_activate B
+reboot
 
-### PON相关配置
-```
-8311_cp_hw_ver_sync=1
-8311_device_sn=DM222XXXXXXXXXX
-8311_equipment_id=5690
-8311_gpon_sn=SMBSXXXXXXXX
-8311_hw_ver=Fast5689EBell
-8311_mib_file=/etc/mibs/prx300_1V.ini
-8311_reg_id_hex=00
-8311_sw_verA=SGC830007C
-8311_sw_verB=SGC830006E
-8311_vendor_id=SMBS
+# 3. 确认版本（/etc/8311_version）、PON 进入 O5、上网 / IPTV / 语音都正常，然后提交
+fw_setenv commit_bank B; fw_setenv commit_bank B
 ```
 
-- `8311_cp_hw_ver_sync` - **同步Circuit Pack Version**  
-  当设置为`1`且设置了`8311_hw_ver`时，将修改配置的mib文件以使任何Circuit Pack ME的Version字段与硬件版本匹配。
+- 试启动期间重启一次，就会回到原来的 `commit_bank`。CN5 起还有自动回退：管理不可达，或者 omcid 崩溃，都会自动重启回去。
+- 提交以后要回退，把 `commit_bank` 改回旧分区再重启即可。
+- 写入前可以先把非活动分区备份下来：`cat /dev/ubi0_4 /dev/ubi0_5 /dev/ubi0_6`，卷号用 `ubinfo -a` 确认。
+- 除非你清楚自己在做什么，不要碰 U-Boot、`ubootconfig`、`calibration`、`gphyfirmware` 这几个分区。
 
-- `8311_device_sn` - **设备序列号**  
-  设置物理设备序列号，这基本上只用于显示。
+## 构建
 
-- `8311_equipment_id` - **Equipment ID**  
-  设置ONU2-G ME (257)中的PON Equipment ID字段。
+构建需要两份原厂镜像，仓库里没有，也不要提交进来（`stock/` 已加入 `.gitignore`）。原厂镜像由 djGrrr 在 [8311 Discord](https://pon.wiki/discord/) 提供（`stock-2024-11-06.7z`）：
 
-- `8311_gpon_sn` - **GPON SN/ONT ID**  
-  设置发送给OLT的各个ME中的GPON SN（4个字母，后跟8个十六进制数字）。
+| 文件 | sha256 |
+| --- | --- |
+| `V1.0.19_unofficial_WAS_110_PRX126_local.img` | `584066a6fd3d718fd0caea2dfc4ab01ffae287ed3ebc78e6b04daabb19c7c64c` |
+| `PTXG_CX_V0.03/kernel.bin` | `d66b24cf873cc1071a3aa2d155bf677f503f10d221513e469083f8a591f6b96c` |
+| `PTXG_CX_V0.03/bootcore.bin` | `e99e25332bdcb3c9b0447abad1be9b1e54511b6bda99f2b51ae2499db5b905a4` |
+| `PTXG_CX_V0.03/rootfs.img` | `5df5839296d7c2b1a69fa3bd6b2e42ee866a561dc962c33bc73a431530793115` |
 
-- `8311_hw_ver` - **Hardware Version**  
-  设置发送给OLT的各个ME中的硬件版本字符串（最多14个字符）。
+把它们放到 `stock/` 下，然后：
 
-- `8311_iphost_domain` - **IP主机域名**  
-  设置在ME 134中发送给OLT的域名（最多25个字符）。
-
-- `8311_iphost_hostname` - **IP主机名**  
-  设置在ME 134中发送给OLT的主机名（最多25个字符）。
-
-- `8311_iphost_mac` - **IP主机MAC地址**  
-  设置在ME 134中发送给OLT的MAC地址。
-
-- `8311_loid` - **Logical ONU ID**  
-  设置在ME 256中呈现给OLT的LOID（最多24个字符）。
-
-- `8311_lpwd` - **Logical ONU Password**  
-  设置在ME 256中呈现给OLT的LOID密码（最多12个字符）。
-
-- `8311_mib_file` - **MIB文件**  
-  设置omcid使用的MIB文件。默认为`/etc/mibs/prx300_1U.ini`
-
-- `8311_pon_slot` - **PON槽位**  
-  设置UNI端口所在的槽位号，某些ISP需要此设置。
-
-- `8311_reg_id_hex` - **Registration ID**  
-  以十六进制格式设置发送给OLT的注册ID（最多36个字符[72个十六进制]）。这里可以设置ploam密码（包含在最后12个字符中）。
-
-- `8311_sw_verA` / `8311_sw_verB` - **软件版本**  
-  设置在软件镜像ME (7)中发送的特定镜像软件版本。
-
-- `8311_vendor_id` - **Vendor ID**  
-  设置发送给OLT的PON Vendor ID，如果未设置则自动从GPON SN派生（4个字母）。
-
-## 认证
-
-SSH主机密钥（`/etc/dropbear`的所有内容）和authorized_keys（`/root/.ssh`的所有内容）现在都会被持久保存。
-之前的UCI设置将被自动迁移。
-
-当前的root密码（使用`passwd`更改）可以使用`8311-persist-root-password.sh`命令进行持久化保存。
-
-## 脚本使用说明
-
-### build.sh - 构建固件镜像
-用于构建新的修改版WAS-110固件镜像的工具
-```
-Usage: ./build.sh [options]
-
-Options:
--i --image <filename>           指定BFW固件的原始本地升级镜像文件。
--I --image-dir <dir>            指定基础固件的镜像目录（必须包含bootcore.bin、kernel.bin和rootfs.img）。
--o --image-out <filename>       指定要输出的本地升级镜像文件。
--O --tar-out <filename>         指定要输出的本地升级tar文件。
--V --image-version <version>    指定自定义镜像版本字符串。
--r --image-revision <revision>  指定自定义镜像修订字符串。
--w --basic                      构建基础变体镜像。
--W --bfw                        构建bfw变体镜像。
--k --basic-kernel               使用基础内核构建镜像。
--K --bfw-kernel                 使用bfw内核构建镜像。
--b --basic-bootcore             使用基础bootcore构建镜像。
--B --bfw-bootcore               使用bfw bootcore构建镜像。
--R --release                    创建发布归档文件。
--h --help                       显示此帮助文本
+```sh
+git submodule update --init
+docker/build.sh 2.8.3-CN5          # 产物在 out/
 ```
 
-### create.sh - 创建固件镜像
-用于创建新的WAS-110本地升级镜像的工具
-```
-Usage: ./create.sh [options]
+也可以在 Linux 上直接运行 `./build.sh -i stock/V1.0.19_unofficial_WAS_110_PRX126_local.img -I stock/PTXG_CX_V0.03 --basic --release -V <版本>`，需要的工具见 `docker/Dockerfile`。macOS 自带的 awk 跑不了 `extract.sh`，请用 Docker。
 
-Options:
--i --image <filename>                   指定要创建的本地升级（img或tar）文件（必需）。
--w --basic                              构建基础本地升级tar文件。
--W --bfw                                构建bfw本地升级镜像文件。
--H --header <filename>                  指定基于其创建镜像的镜像头文件（默认：header.bin）。
--b --bootcore <filename>                指定要放置在创建的（bfw）镜像中的bootcore镜像文件（默认：bootcore.bin）。
--k --kernel <filename>                  指定要放置在创建的镜像中的内核镜像文件（默认：kernel.bin）。
--r --rootfs <filename>                  指定要放置在创建的镜像中的rootfs镜像文件（默认：rootfs.img）。
--F --version-file <filename>            指定基础固件镜像的8311版本文件。
--V --image-version <version>            指定要在创建的镜像上设置的版本字符串（最多15个字符）。
--L --image-long-version <version>       指定要在创建的bfw镜像上设置的详细版本字符串（最多31个字符）。
--D --date <date>                        指定要在所有文件上使用的日期。有助于重现性。
--h --help                               此帮助文本
-```
+构建是可复现的：`docker/Dockerfile` 锁定了基础镜像的 digest 和 snapshot.debian.org 的日期（mksquashfs 的版本会影响 rootfs 的字节）。用上面的原厂镜像在这个环境里重编 2.8.3-CN3，得到的 kernel、bootcore、rootfs 与当时刷进设备的分区逐字节相同。
 
-### extract.sh - 提取固件镜像
-用于提取原始WAS-110本地升级镜像的工具
-```
-Usage: ./extract.sh [options]
+`binary-mods.sh` 只在原厂文件哈希匹配时打补丁。补丁打完会校验结果哈希，不一致就让构建失败。但如果原厂文件本身不对，它会**静默跳过**补丁。所以别用已经改过的 8311 发布包当原厂件。
 
-Options:
--i --image <filename>           指定要提取的本地升级镜像文件（必需）。
--H --header <filename>          指定要提取镜像头到的文件名（默认：header.bin）。
--b --bootcore <filename>        指定要提取bootcore镜像到的文件名（默认：bootcore.bin）。
--k --kernel <filename>          指定要提取内核镜像到的文件名（默认：kernel.bin）。
--r --rootfs <filename>          指定要提取rootfs镜像到的文件名（默认：rootfs.img）。
--h --help                       此帮助文本
-```
+## 分支
 
-## VLAN修复功能
+| 分支 | 说明 |
+| --- | --- |
+| `master` | 当前维护线，基于 2.8.3-CN3 |
+| `archive/xiao-unreleased` | xiao-k233 在 CN3 之后提交、没有发布的改动，包括 reg_id 处理方式的修改、子模块组播 VLAN 的修改等。这里**没有采用**：其中 reg_id 的改动会让 regID 为空时发给 OLT 的注册 ID 从 36 个 `0x30` 变成 36 个 `0x00` |
+| 其他 | 从 xiao-k233 仓库原样保留 |
 
-该项目包含一个强大的VLAN修复功能，可以自动检测和修复来自OLT的VLAN配置问题。该功能通过操控extvlan（me171）来实现VLAN转换，具有更好的通用性和更低的学习成本。
+## 已知问题
 
-更多关于VLAN修复的信息，请查看`8311-xgspon-bypass`目录中的文档。
+- CN3 的 `get_8311_reg_id_hex` / `_set_8311_reg_id_hex` 会把十六进制字符串再按文本编码一次。`8311_reg_id` 为空时，实际发出的是 36 个 ASCII `0`。已经在用的线路靠这个值注册成功，所以没有改。需要设置 PLOAM 密码的话，请先确认实际写入的值：`uci get gpon.ploam.regID`。
+- `libifxos` 的 `IFXOS_ElapsedTimeMSecGet(ref)` 在 32 位毫秒计数回绕时算错了经过的时间。目前没观察到影响（2^32 回绕测试正常），所以没有打补丁。
 
-## 国际化支持
+## 捐助
 
-固件支持多语言界面，包括英文和中文。翻译文件位于`i18n/po/`目录中。
+如果这个固件对你有帮助，欢迎捐助：
 
-## 构建要求
+- 加密货币（EVM 地址）：`0xdb61B2aD59bdF2A066B7fC9F00f86c3EBc4856B4`
 
-- Linux系统
-- squashfs-tools (mksquashfs)
-- u-boot-tools (mkimage)
-- dos2unix/unix2dos
-- jq
-- git
+## 作者与致谢
 
-## 使用方法
+- Hikaru (i@rua.moe)：2.8.3-CN4 起的维护，包括 omcid 定时器修复、崩溃自动重启、试启动自动回退、远程 syslog
+- [djGrrr](https://github.com/djGrrr) 和 8311 社区：原版构建器、补丁和原厂镜像
+- [xiao-k233 / KillerZ](https://github.com/xiao-k233)：国内适配（VLAN、组播、中文界面等）
 
-1. 克隆此仓库：
-   ```bash
-   git clone <repository-url>
-   cd 8311-was-110-firmware-builder
-   ```
-
-2. 准备原始固件镜像文件（从设备或供应商获取）
-
-3. 使用build.sh脚本构建自定义固件：
-   ```bash
-   ./build.sh -i <原始固件镜像> -I <基础固件目录> --basic --release -V "<版本号>"
-   ```
-
-4. 构建完成的固件将位于`out/`目录中
-
-## 注意事项
-
-- 构建过程需要root权限
-- 修改固件可能会影响设备的保修
-- 错误的配置可能导致设备无法启动
-- 建议在操作前备份原始固件
-
-## 社区和支持
-
-- 8311社区Discord服务器
-- 恩山论坛相关讨论贴
-
-## 贡献者
-
-- djGrrr - 原始项目开发者
-- Missing - 中文翻译贡献者
-- KillerZ - 国内优化版本维护者
-
-## 许可证
-
-本项目基于GPLv3许可证发布。
+上游仓库没有附带许可证文件。使用和分发时请遵守原作者与固件厂商的相关条款。

@@ -453,7 +453,7 @@ function fwenvs_8311()
 					name=translate("Fix VLANs"),
 					description=translate("Apply automatic fixes to the VLAN configuration from the OLT."),
 					type="select_named",
-					default="1",
+					default="0", -- unset means disabled in 8311-vlansd.sh / 8311-fix-vlans.sh
 					change = vlan_mode_change ,
 					options={
 						{
@@ -680,6 +680,23 @@ function fwenvs_8311()
 					type = "text"
 				},
 				{
+					id = "syslog_server",
+					name = translate("Remote Syslog Server"),
+					description = translate("Send the system log to this syslog server over UDP, as host or host:port (port 514 by default)."),
+					maxlength = 255,
+					pattern = "^[A-Za-z0-9.\\-]+(:[0-9]{1,5})?$",
+					type = "text"
+				},
+				{
+					id = "omcid_crash_reboot",
+					name = translate("Reboot on omcid Crash"),
+					description = translate(
+						"Reboot when omcid crashes more than 10 minutes after boot. A crashed omcid cannot be restarted in place, so without this the stick stays offline until it is power cycled."
+					),
+					type = "checkbox",
+					default = true,
+				},
+				{
 					id = "persist_root",
 					name = translate("Persist RootFS"),
 					description = translate(
@@ -745,7 +762,7 @@ function fwenvs_8311()
 					name = translate("Date Code"),
 					description = translate("Set the date code presented in the virtual EEPROM (up to 8 characters)."),
 					type = "text",
-					pattern = "^\\d{6}.{,2}",
+					pattern = "^\\d{6}.{0,2}",
 					maxlength = "8",
 				},
 				{
@@ -959,8 +976,11 @@ function action_gpon_status()
 			". /lib/8311-omci-lib.sh && mibattr 131 0 1 | awk 'NR==3 {sub(/^ +/, \"\"); print $1}'"
 		)
 		:trim() or "Unknown"
-	local vlan_info = fs.readfile("/tmp/8311-vlans"):trim() or "Unknown"
-	local reboot_cause = fs.readfile("/tmp/8311-rstcause"):trim() or "Unknown"
+	-- /tmp/8311-vlans does not exist before 8311-vlansd writes it, or at all with 8311_fix_vlans=0
+	local vlan_info = (fs.readfile("/tmp/8311-vlans") or ""):trim()
+	if vlan_info == "" then vlan_info = "Unknown" end
+	local reboot_cause = (fs.readfile("/tmp/8311-rstcause") or ""):trim()
+	if reboot_cause == "" then reboot_cause = "Unknown" end
 	local rv = {
 		status = pon_state(metrics.ploam_state),
 		power = string.format(

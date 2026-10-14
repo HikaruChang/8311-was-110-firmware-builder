@@ -119,6 +119,29 @@ if [ -n "$NTP_SERVERS" ]; then
 	done
 fi
 uci set "system.ntp.enabled"="$NTP_ENABLED"
+
+# Remote syslog, "host" or "host:port" (UDP, port 514 by default). /etc is
+# rebuilt on every boot, so like the NTP servers this has to live in fwenv.
+uci -q delete "system.@system[0].log_ip"
+uci -q delete "system.@system[0].log_port"
+uci -q delete "system.@system[0].log_proto"
+SYSLOG_SERVER=$(get_8311_syslog_server)
+if [ -n "$SYSLOG_SERVER" ]; then
+	SYSLOG_PORT="514"
+	case "$SYSLOG_SERVER" in
+		*:*)
+			SYSLOG_PORT="${SYSLOG_SERVER##*:}"
+			SYSLOG_SERVER="${SYSLOG_SERVER%:*}"
+		;;
+	esac
+	case "$SYSLOG_PORT" in
+		""|*[!0-9]*) SYSLOG_PORT="514" ;;
+	esac
+	[ "$SYSLOG_PORT" -ge 1 ] && [ "$SYSLOG_PORT" -le 65535 ] || SYSLOG_PORT="514"
+	uci set "system.@system[0].log_ip"="$SYSLOG_SERVER"
+	uci set "system.@system[0].log_port"="$SYSLOG_PORT"
+	uci set "system.@system[0].log_proto"="udp"
+fi
 uci commit "system"
 
 if [ -f /usr/sbin/uhttpd ]; then

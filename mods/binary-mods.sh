@@ -56,7 +56,13 @@ if check_file "$OMCID" "5217dccf98cf8c75bc1b8ba380a92514511a77c40803a9718651b1f2
 	printf '\x6C' | dd of="$OMCID" conv=notrunc seek=$((0x8262F)) bs=1 count=1 2>/dev/null
 	printf '\x02' | dd of="$OMCID" conv=notrunc seek=$((0x82633)) bs=1 count=1 2>/dev/null
 
-	expected_hash "$OMCID" "c1df5decc2aa80a583abf0d8b1a237cc603ceeabd4acee4f7e8bbb6a91fd6848"
+	# omci_timeout.c - functions timeout_thread_main and timeout_event_add - compare expiry times wrap-safe
+	# Expiry is a 32-bit ms uptime compared with slt, so near 2^31 ms (24.86 days) new timers fire at once and
+	# re-arming ones spin until omcitm crashes; use (int)(a - b) < 0 instead: slt+bnez -> subu+bltz, slt+beqz -> subu+bgez
+	printf '\x00\x5E\x10\x23\x04\x40\xFF\xEC' | dd of="$OMCID" conv=notrunc seek=$((0x32468)) bs=1 count=8 2>/dev/null
+	printf '\x00\xC4\x20\x23\x04\x81\x00\x13' | dd of="$OMCID" conv=notrunc seek=$((0x329C8)) bs=1 count=8 2>/dev/null
+
+	expected_hash "$OMCID" "4bed8e6a43ed693da8382d3c128cece3b3eac66664452875f291b25df04eb2d6"
 fi
 
 # Potrontec 1.18.1 OMCId v8.15.17 and PTXG_CX_V0.03
